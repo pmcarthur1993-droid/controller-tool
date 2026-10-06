@@ -675,7 +675,15 @@
             <h3 style="margin:0; color:#c0392b;">⛔ Embargoed Airport Manager</h3>
             <button onclick="closeEmbargoManager()" style="background:#eee; color:#333;">Close</button>
         </div>
-        <p style="font-size:13px; color:#666;">Add 3-letter airport codes (e.g. KBL, ORB) to trigger warnings.</p>
+        <p style="font-size:13px; color:#666;"><strong>Embargoed countries</strong> — every airport in these states is flagged automatically (built-in: Russia, Belarus, Iran, North Korea, Syria, Cuba). Two-letter ISO codes.</p>
+        <div class="tag-container" id="embargoCountryDisplay"></div>
+        <div style="display:flex; gap:10px; margin-bottom:10px;">
+            <input type="text" id="newEmbargoCountry" class="yellow-input" placeholder="Country code (e.g. RU)" maxlength="2" style="background:white; text-transform:uppercase;">
+            <button class="btn-add" style="margin:0;" onclick="addEmbargoCountry()">Add country</button>
+            <button style="margin:0; background:#eee; color:#333;" onclick="resetEmbargoCountries()">Reset to built-in</button>
+        </div>
+        <hr style="margin:15px 0;">
+        <p style="font-size:13px; color:#666;"><strong>Individual airports</strong> — add 3-letter codes (e.g. KBL, ORB) for airports outside those countries.</p>
         <div class="tag-container" id="embargoListDisplay"></div>
         <div style="display:flex; gap:10px; margin-bottom:10px;">
             <input type="text" id="newEmbargoCode" class="yellow-input" placeholder="Single Code (e.g. KBL)" style="background:white; text-transform:uppercase;">
@@ -823,7 +831,22 @@
     let currentFixedLabels = {...factoryFixedLabels};
 
     let worldClocks = [];
-    let embargoedAirports = []; 
+    let embargoedAirports = [];
+    // Built-in embargo by COUNTRY: every airport in these states is flagged even if its code was never added by hand.
+    // RU/BY: US EAR export controls on Russia & Belarus (2022-); IR, KP, SY, CU: OFAC comprehensive sanctions. Edit in the Embargo Manager.
+    const EMBARGO_COUNTRIES_DEFAULT = ['RU', 'BY', 'IR', 'KP', 'SY', 'CU'];
+    let embargoedCountries = EMBARGO_COUNTRIES_DEFAULT.slice();
+    function isEmbargoedCode(code) {
+        code = String(code || '').toUpperCase();
+        if (embargoedAirports.includes(code)) return true;
+        const a = airportDB()[code];
+        return !!(a && a.cc && embargoedCountries.includes(a.cc));
+    }
+    function embargoReason(code) {
+        const a = airportDB()[String(code || '').toUpperCase()];
+        if (a && a.cc && embargoedCountries.includes(a.cc)) return code + ' (' + (AIRPORT_COUNTRIES[a.cc] || a.cc) + ')';
+        return code + ' (listed)';
+    }
     let savedGroups = ["737NG/MAX Wing/Emp", "737CL Wing", "777 Fuselage"];
 
     function openTab(evt, name) {
@@ -10422,7 +10445,7 @@ ZZU	Mzuzu Airport	MW
 ZZV	Zanesville Municipal Airport	US`;
     let _airports = null;
     function airportDB() {
-        if (!_airports) { _airports = {}; AIRPORT_DATA.split('\n').forEach(l => { const p = l.split('\t'); if (p[0]) _airports[p[0]] = { n: p[1], c: AIRPORT_COUNTRIES[p[2]] || p[2] }; }); }
+        if (!_airports) { _airports = {}; AIRPORT_DATA.split('\n').forEach(l => { const p = l.split('\t'); if (p[0]) _airports[p[0]] = { n: p[1], c: AIRPORT_COUNTRIES[p[2]] || p[2], cc: (p[2] || '').trim().toUpperCase() }; }); }
         return _airports;
     }
     function airportLine(code) { const a = airportDB()[String(code || '').toUpperCase()]; return a ? a.n + ' - ' + a.c : ''; }
@@ -11588,6 +11611,8 @@ ZZV	Zanesville Municipal Airport	US`;
             
             const savedEmbargo = localStorage.getItem('embargo_list');
             if(savedEmbargo) embargoedAirports = JSON.parse(savedEmbargo);
+            const savedEmbargoCountries = localStorage.getItem('embargo_countries');
+            if(savedEmbargoCountries) embargoedCountries = JSON.parse(savedEmbargoCountries);
             
             const savedGroupList = localStorage.getItem('custom_Groups');
             if(savedGroupList) savedGroups = JSON.parse(savedGroupList);
@@ -11912,7 +11937,7 @@ window.onload = () => {
         (raw.toUpperCase().match(/\b[A-Z0-9]{3,4}(?= - )/g) || []).forEach(c => codes.add(c));
         let mm; const rxTF = /\b(?:TO|FROM)\s+([A-Z0-9]{3,4})\b/g;               // "en route to LHR from DUB" typed without names
         while ((mm = rxTF.exec(raw.toUpperCase())) !== null) codes.add(mm[1]);
-        return Array.from(codes).filter(c => embargoedAirports.includes(c));
+        return Array.from(codes).filter(c => isEmbargoedCode(c));
     }
 
     // Location box (destination when airborne) + departure airport when airborne
@@ -11927,7 +11952,7 @@ window.onload = () => {
         const warn = document.getElementById('embargoWarning');
         const input = document.getElementById('acLocation');
         if(hits.length) {
-            if(warn) { warn.textContent = '⚠️ WARNING: EMBARGOED AIRPORT (' + hits.join(', ') + ')'; warn.style.display = 'inline'; }
+            if(warn) { warn.textContent = '⚠️ WARNING: EMBARGOED AIRPORT (' + hits.map(embargoReason).join(', ') + ')'; warn.style.display = 'inline'; }
             if(input) input.classList.add('embargo-input-error');
         } else {
             if(warn) warn.style.display = 'none';
@@ -12068,12 +12093,28 @@ window.onload = () => {
     function renderEmbargoList() {
         const c = document.getElementById('embargoListDisplay');
         c.innerHTML = "";
+        if (!embargoedAirports.length) c.innerHTML = '<span style="color:#888;font-size:12px;">No individual airport codes added — country rules below still apply.</span>';
         embargoedAirports.forEach(code => {
             const t = document.createElement('div'); t.className='tag-item';
             t.innerHTML = `${code} <span class="tag-close" onclick="removeEmbargo('${code}')">x</span>`;
             c.appendChild(t);
         });
+        const cc = document.getElementById('embargoCountryDisplay');
+        if (cc) {
+            cc.innerHTML = "";
+            embargoedCountries.forEach(code => {
+                const t = document.createElement('div'); t.className='tag-item'; t.style.background = '#fbe9e7'; t.style.borderColor = '#c0392b';
+                t.innerHTML = `${code} · ${AIRPORT_COUNTRIES[code] || code} <span class="tag-close" onclick="removeEmbargoCountry('${code}')">x</span>`;
+                cc.appendChild(t);
+            });
+        }
     }
+    function addEmbargoCountry() {
+        const v = document.getElementById('newEmbargoCountry').value.trim().toUpperCase();
+        if (v && v.length === 2 && !embargoedCountries.includes(v)) { embargoedCountries.push(v); saveEmbargo(); document.getElementById('newEmbargoCountry').value = ""; }
+    }
+    function removeEmbargoCountry(c) { embargoedCountries = embargoedCountries.filter(x => x !== c); saveEmbargo(); }
+    function resetEmbargoCountries() { embargoedCountries = EMBARGO_COUNTRIES_DEFAULT.slice(); saveEmbargo(); }
     
     function addSingleEmbargo() {
         const v = document.getElementById('newEmbargoCode').value.trim().toUpperCase();
@@ -12099,6 +12140,7 @@ window.onload = () => {
     
     function saveEmbargo() {
         localStorage.setItem('embargo_list', JSON.stringify(embargoedAirports));
+        localStorage.setItem('embargo_countries', JSON.stringify(embargoedCountries));
         renderEmbargoList();
         checkEmbargo(document.getElementById('acLocation').value);
     }
